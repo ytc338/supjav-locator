@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Last Played Video Finder",
+  "version": "1.0",
+  "permissions": ["history", "scripting", "tabs", "activeTab", "webNavigation" ],
+  "host_permissions": ["https://supjav.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Find Last Video"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://supjav.com/*"],
+      "js": ["videoFinder.js"]
+    }
+  ],
+  "icons": {
+      "16": "icon2.png",
+      "32": "icon2.png",
+      "48": "icon2.png",
+      "128": "icon2.png"
+    }
+}
