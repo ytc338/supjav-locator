@@ -7,7 +7,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (foundVideo) {
             // Scroll the video into view and highlight it
             foundVideo.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            foundVideo.style.border = '2px solid red';
+            foundVideo.style.outline = '2px solid red';
             sendResponse({ found: true });
         } else {
             sendResponse({ found: false });
