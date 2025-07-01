@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Last Played Video Finder",
   "version": "1.0",
-  "permissions": ["history", "scripting", "tabs", "activeTab", "webNavigation" ],
+  "permissions": ["history", "scripting", "tabs", "storage", "offscreen" ],
   "host_permissions": ["https://supjav.com/*"],
   "background": {
     "service_worker": "background.js",

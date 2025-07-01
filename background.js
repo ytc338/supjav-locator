@@ -1,73 +1,99 @@
+const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
+let highlightTasks = {}; // Store highlight jobs here, keyed by tabId
+
+async function hasOffscreenDocument() {
+    const matchedClients = await clients.matchAll();
+    for (const client of matchedClients) {
+        if (client.url.endsWith(OFFSCREEN_DOCUMENT_PATH)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+async function findVideoViaOffscreen(videoTitle, pageNum) {
+    if (!(await hasOffscreenDocument())) {
+        await chrome.offscreen.createDocument({
+            url: OFFSCREEN_DOCUMENT_PATH,
+            reasons: ['DOM_PARSER'],
+            justification: 'To parse HTML content from a fetch request.',
+        });
+    }
+
+    return new Promise((resolve) => {
+        const listener = (message) => {
+            if (typeof message.found === 'boolean') {
+                chrome.runtime.onMessage.removeListener(listener);
+                resolve(message.found);
+            }
+        };
+        chrome.runtime.onMessage.addListener(listener);
+        chrome.runtime.sendMessage({ action: 'checkPage', videoTitle, pageNum });
+    });
+}
+
 async function getVideoTitleFromHistory(query) {
     return new Promise((resolve) => {
-        chrome.history.search({ text: query, maxResults: 10, startTime:480 }, (results) => {
-            console.log("History search results:", results); // Log the results to debug
+        chrome.history.search({ text: query, maxResults: 10, startTime: 480 }, (results) => {
             if (results.length > 0) {
                 const firstResultTitle = results[0].title || '';
-                const videoTitle = firstResultTitle.split(' ').slice(0, 2).join(' '); // First two words
-                console.log("Extracted video title:", videoTitle); // Debug extracted title
+                const videoTitle = firstResultTitle.split(' ').slice(0, 2).join(' ');
                 resolve(videoTitle);
             } else {
-                return;
+                resolve(null);
             }
         });
     });
 }
 
-// Navigate to a page and check if the video is present
-function navigateToPage(tabId, pageNum, videoTitle) {
-    const nextUrl = `https://supjav.com/category/uncensored-jav/page/${pageNum}`;
-
-    // Navigate to the next URL
-    chrome.tabs.update(tabId, { url: nextUrl }, () => {
-        console.log(`Navigated to: ${nextUrl}`);
-
-        // Listen for the page to finish loading
-        const onCompletedListener = (details) => {
-            if (details.tabId === tabId && details.frameId === 0) {
-                // Remove the listener to prevent duplicate responses
-                chrome.webNavigation.onCompleted.removeListener(onCompletedListener);
-
-                // Send a message to the content script to search for the video
-                chrome.tabs.sendMessage(tabId, { action: 'findVideo', title: videoTitle }, (response) => {
-                    if (response && !response.found) {
-                        // If the video is not found, navigate to the next page
-                        navigateToPage(tabId, pageNum + 1, videoTitle);
-                    } else if (response && response.found) {
-                        console.log('Video found!');
-                        return; // Stop navigation
-                    }
-                });
-            }
-        };
-
-        // Add the listener for when the page finishes loading
-        chrome.webNavigation.onCompleted.addListener(onCompletedListener);
+function openTabAndPrepareHighlight(url, videoTitle) {
+    chrome.tabs.create({ url: url }, (tab) => {
+        // Store the title for the content script to retrieve
+        highlightTasks[tab.id] = videoTitle;
     });
 }
 
-// Start the navigation process
-function startNavigation(videoTitle) {
-    chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime:480 }, (results) => {
-        const lastVisited = results.find((entry) => entry.url.includes('/page/'));
-        if (lastVisited) {
-            const pageMatch = lastVisited.url.match(/page\/(\d+)/);
-            const pageNum = pageMatch ? parseInt(pageMatch[1], 10) : 1;
-            chrome.tabs.create({ url: lastVisited.url }, (tab) => {
-                navigateToPage(tab.id, pageNum, videoTitle);
-            });
-        } else {
-            return;
+// Listen for the content script asking for its job
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getHighlightJob') {
+        const tabId = sender.tab.id;
+        if (highlightTasks[tabId]) {
+            sendResponse({ title: highlightTasks[tabId] });
+            // Clean up the task after sending it
+            delete highlightTasks[tabId];
         }
-    });
-}
+        return true; // Keep channel open for async response
+    }
+});
 
-// When the extension is clicked
 chrome.action.onClicked.addListener(async () => {
     const videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
-    if (videoTitle) {
-        startNavigation(videoTitle);
-    } else {
+    if (!videoTitle) {
         return;
     }
+
+    chrome.history.search({ text: 'supjav.com', maxResults: 50 }, async (results) => {
+        const lastVisited = results.find((entry) => entry.url.includes('/page/'));
+        let startPage = 1;
+        if (lastVisited) {
+            const pageMatch = lastVisited.url.match(/page\/(\d+)/);
+            startPage = pageMatch ? parseInt(pageMatch[1], 10) : 1;
+        }
+
+        const MAX_PAGES_TO_CHECK = 10;
+        for (let i = 0; i < MAX_PAGES_TO_CHECK; i++) {
+            const currentPage = startPage + i;
+            const found = await findVideoViaOffscreen(videoTitle, currentPage);
+            if (found) {
+                const finalUrl = `https://supjav.com/category/uncensored-jav/page/${currentPage}`;
+                openTabAndPrepareHighlight(finalUrl, videoTitle);
+                chrome.offscreen.closeDocument();
+                return;
+            }
+        }
+
+        const fallbackUrl = `https://supjav.com/category/uncensored-jav/page/${startPage}`;
+        openTabAndPrepareHighlight(fallbackUrl, videoTitle);
+        chrome.offscreen.closeDocument();
+    });
 });
