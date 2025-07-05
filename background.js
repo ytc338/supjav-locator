@@ -71,7 +71,7 @@ chrome.action.onClicked.addListener(async () => {
     if (initialCheck.found) {
         openTabAndPrepareHighlight(lastVisited.url, videoTitle);
         if (initialCheck.totalVideos) {
-            chrome.storage.local.set({ oldVideoCount: initialCheck.totalVideos });
+            chrome.storage.sync.set({ oldVideoCount: initialCheck.totalVideos });
         }
         await chrome.offscreen.closeDocument();
         return;
@@ -84,7 +84,7 @@ chrome.action.onClicked.addListener(async () => {
         return;
     }
 
-    const storedData = await chrome.storage.local.get('oldVideoCount');
+    const storedData = await chrome.storage.sync.get('oldVideoCount');
     const oldVideoCount = storedData.oldVideoCount || newVideoCount;
 
     const videosAdded = newVideoCount - oldVideoCount;
@@ -107,7 +107,7 @@ chrome.action.onClicked.addListener(async () => {
         openTabAndPrepareHighlight(finalUrl, videoTitle);
     }
 
-    chrome.storage.local.set({ oldVideoCount: newVideoCount });
+    chrome.storage.sync.set({ oldVideoCount: newVideoCount });
     await chrome.offscreen.closeDocument();
 });
 
