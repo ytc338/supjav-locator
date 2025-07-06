@@ -62,7 +62,7 @@ chrome.action.onClicked.addListener(async () => {
     const videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
     if (!videoTitle) return;
 
-    const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50 }, resolve));
+    const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 480 }, resolve));
     const lastVisited = historyResults.find((entry) => entry.url.includes('/page/'));
     const lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : 1;
 
