@@ -59,19 +59,30 @@ function openTabAndPrepareHighlight(url, videoTitle) {
 // --- Main Logic ---
 
 chrome.action.onClicked.addListener(async () => {
-    const videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
-    if (!videoTitle) return;
+    let videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
 
     const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 480 }, resolve));
     const lastVisited = historyResults.find((entry) => entry.url.includes('/page/'));
-    const lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : 1;
+    let lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : null;
+
+    // Fall back to synced data when local history is missing (e.g. different device)
+    const storedData = await chrome.storage.sync.get(['oldVideoCount', 'videoTitle', 'lastKnownPage']);
+    if (!videoTitle) {
+        videoTitle = storedData.videoTitle;
+    }
+    if (!lastKnownPage) {
+        lastKnownPage = storedData.lastKnownPage || 1;
+    }
+
+    if (!videoTitle) return;
 
     const initialCheck = await findVideoViaOffscreen(videoTitle, lastKnownPage);
 
     if (initialCheck.found) {
-        openTabAndPrepareHighlight(lastVisited.url, videoTitle);
+        const url = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
+        openTabAndPrepareHighlight(url, videoTitle);
         if (initialCheck.totalVideos) {
-            chrome.storage.sync.set({ oldVideoCount: initialCheck.totalVideos });
+            chrome.storage.sync.set({ oldVideoCount: initialCheck.totalVideos, videoTitle, lastKnownPage });
         }
         await chrome.offscreen.closeDocument();
         return;
@@ -79,12 +90,12 @@ chrome.action.onClicked.addListener(async () => {
 
     const newVideoCount = initialCheck.totalVideos;
     if (!newVideoCount) {
-        openTabAndPrepareHighlight(lastVisited.url, videoTitle);
+        const url = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
+        openTabAndPrepareHighlight(url, videoTitle);
         await chrome.offscreen.closeDocument();
         return;
     }
 
-    const storedData = await chrome.storage.sync.get('oldVideoCount');
     const oldVideoCount = storedData.oldVideoCount || newVideoCount;
 
     const videosAdded = newVideoCount - oldVideoCount;
@@ -97,17 +108,22 @@ chrome.action.onClicked.addListener(async () => {
     if (predictedCheck.found) {
         const finalUrl = `https://supjav.com/category/uncensored-jav/page/${predictedPage}`;
         openTabAndPrepareHighlight(finalUrl, videoTitle);
+        chrome.storage.sync.set({ oldVideoCount: newVideoCount, videoTitle, lastKnownPage: predictedPage });
     } else {
         console.log("Not on predicted page, checking next page.");
         const nextPage = predictedPage + 1;
         const nextCheck = await findVideoViaOffscreen(videoTitle, nextPage);
-        const finalUrl = nextCheck.found
-            ? `https://supjav.com/category/uncensored-jav/page/${nextPage}`
-            : lastVisited.url; // Fallback
-        openTabAndPrepareHighlight(finalUrl, videoTitle);
+        if (nextCheck.found) {
+            const finalUrl = `https://supjav.com/category/uncensored-jav/page/${nextPage}`;
+            openTabAndPrepareHighlight(finalUrl, videoTitle);
+            chrome.storage.sync.set({ oldVideoCount: newVideoCount, videoTitle, lastKnownPage: nextPage });
+        } else {
+            const fallbackUrl = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
+            openTabAndPrepareHighlight(fallbackUrl, videoTitle);
+            chrome.storage.sync.set({ oldVideoCount: newVideoCount });
+        }
     }
 
-    chrome.storage.sync.set({ oldVideoCount: newVideoCount });
     await chrome.offscreen.closeDocument();
 });
 
