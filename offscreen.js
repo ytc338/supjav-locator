@@ -28,8 +28,9 @@ chrome.runtime.onMessage.addListener(async (request) => {
         // Check if the video is on the current page
         let found = false;
         const videoElements = doc.querySelectorAll("div.posts.clearfix > div > a");
+        const videoTitleLower = videoTitle.toLowerCase();
         for (const element of videoElements) {
-            if (element.getAttribute("title")?.includes(videoTitle)) {
+            if (element.getAttribute("title")?.toLowerCase().includes(videoTitleLower)) {
                 found = true;
                 break;
             }

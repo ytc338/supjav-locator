@@ -59,19 +59,19 @@ function openTabAndPrepareHighlight(url, videoTitle) {
 // --- Main Logic ---
 
 chrome.action.onClicked.addListener(async () => {
-    let videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
-
-    const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 480 }, resolve));
-    const lastVisited = historyResults.find((entry) => entry.url.includes('/page/'));
-    let lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : null;
-
-    // Fall back to synced data when local history is missing (e.g. different device)
+    // Primary: use synced data (works across devices)
     const storedData = await chrome.storage.sync.get(['oldVideoCount', 'videoTitle', 'lastKnownPage']);
+    let videoTitle = storedData.videoTitle;
+    let lastKnownPage = storedData.lastKnownPage;
+
+    // Fallback: bootstrap from local history on first run
     if (!videoTitle) {
-        videoTitle = storedData.videoTitle;
+        videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
     }
     if (!lastKnownPage) {
-        lastKnownPage = storedData.lastKnownPage || 1;
+        const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 480 }, resolve));
+        const lastVisited = historyResults.find((entry) => entry.url.includes('/page/'));
+        lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : 1;
     }
 
     if (!videoTitle) return;
@@ -120,7 +120,6 @@ chrome.action.onClicked.addListener(async () => {
         } else {
             const fallbackUrl = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
             openTabAndPrepareHighlight(fallbackUrl, videoTitle);
-            chrome.storage.sync.set({ oldVideoCount: newVideoCount });
         }
     }
 
