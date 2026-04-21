@@ -129,11 +129,57 @@ chrome.action.onClicked.addListener(async () => {
 // --- Message Listener for Highlight Job ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'getHighlightJob') {
-        const tabId = sender.tab.id;
-        if (highlightTasks[tabId]) {
-            sendResponse({ title: highlightTasks[tabId] });
-            delete highlightTasks[tabId];
-        }
-        return true;
+        const tabId = sender.tab && sender.tab.id;
+        const title = (tabId && highlightTasks[tabId]) || null;
+        if (title) delete highlightTasks[tabId];
+        sendResponse({ title }); // always respond, even when null, so the channel closes cleanly
+        return false;
     }
 });
+
+// --- Auto-track last-watched state as the user browses ---
+// Keeps chrome.storage.sync fresh without waiting for an icon click,
+// so device B sees the latest snapshot from device A.
+function trackSupjavTab(tabId, reason) {
+    chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError) return;
+        if (!tab || !tab.url || !tab.url.includes('supjav.com')) return;
+        console.log(`[Tracker:${reason}] url=${tab.url} title=${tab.title}`);
+
+        const pageMatch = tab.url.match(/\/page\/(\d+)/);
+        if (pageMatch) {
+            const page = parseInt(pageMatch[1], 10);
+            chrome.storage.sync.set({ lastKnownPage: page }, () => {
+                if (chrome.runtime.lastError) {
+                    console.error('[Tracker] set lastKnownPage failed:', chrome.runtime.lastError);
+                } else {
+                    console.log('[Tracker] lastKnownPage =', page);
+                }
+            });
+        }
+
+        if (tab.title) {
+            const m = tab.title.match(/FC2[-\s]?PPV[-\s]?(\d+)/i);
+            if (m) {
+                const videoTitle = `FC2PPV ${m[1]}`;
+                chrome.storage.sync.set({ videoTitle }, () => {
+                    if (chrome.runtime.lastError) {
+                        console.error('[Tracker] set videoTitle failed:', chrome.runtime.lastError);
+                    } else {
+                        console.log('[Tracker] videoTitle =', videoTitle);
+                    }
+                });
+            }
+        }
+    });
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    // Fire on any meaningful change — URL navigation, title set, or load complete.
+    // Title often arrives AFTER status=complete, so we can't rely on a single event.
+    if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') {
+        trackSupjavTab(tabId, changeInfo.url ? 'url' : changeInfo.title ? 'title' : 'complete');
+    }
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => trackSupjavTab(tabId, 'activated'));

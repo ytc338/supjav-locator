@@ -1,5 +1,7 @@
 # SupJav Locator
 
+[![Version](https://img.shields.io/github/v/release/ytc338/supjav-locator)](https://github.com/ytc338/supjav-locator/releases)
+
 **Disclaimer:** This project is intended for use with adult content and is therefore not safe for work (NSFW).
 
 ## Description
