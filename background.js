@@ -1,185 +1,155 @@
-const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
+// Supjav blocks background fetches with Cloudflare (HTTP 403), so the search
+// runs in a visible tab instead: the tab opens a list page, the content script
+// reports whether the video is there, and we tell it which page to try next.
+
 const VIDEOS_PER_PAGE = 24;
-let highlightTasks = {};
+const LIST_URL = 'https://supjav.com/category/uncensored-jav/page/';
+const LIST_PAGE_RE = /supjav\.com\/category\/uncensored-jav\/page\/(\d+)/;
+const MAX_PROBES = 13;               // predicted page ± 6
+const JOB_TTL_MS = 5 * 60 * 1000;    // a search tab gives up after 5 minutes
 
-// --- Helper Functions ---
+// --- Helpers ---
 
-async function hasOffscreenDocument() {
-    const matchedClients = await clients.matchAll();
-    for (const client of matchedClients) {
-        if (client.url.endsWith(OFFSCREEN_DOCUMENT_PATH)) {
-            return true;
-        }
-    }
-    return false;
+function setBadge(text, title) {
+    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeBackgroundColor({ color: text === '!' ? '#D93025' : '#888' });
+    chrome.action.setTitle({ title: title || 'Find Last Video' });
 }
 
-async function findVideoViaOffscreen(videoTitle, pageNum) {
-    if (!(await hasOffscreenDocument())) {
-        await chrome.offscreen.createDocument({
-            url: OFFSCREEN_DOCUMENT_PATH,
-            reasons: ['DOM_PARSER'],
-            justification: 'To parse HTML content from a fetch request.',
-        });
+// Search jobs live in storage.session so they survive the service worker going
+// idle (e.g. while you sit on a Cloudflare check page).
+async function getJobs() {
+    const { searchJobs = {} } = await chrome.storage.session.get('searchJobs');
+    const now = Date.now();
+    for (const id of Object.keys(searchJobs)) {
+        if (searchJobs[id].expires < now) delete searchJobs[id];
     }
+    return searchJobs;
+}
 
-    return new Promise((resolve) => {
-        const listener = (message) => {
-            // Ensure we only handle the response for this specific request
-            if (message.totalVideos !== undefined) {
-                chrome.runtime.onMessage.removeListener(listener);
-                resolve(message);
-            }
-        };
-        chrome.runtime.onMessage.addListener(listener);
-        chrome.runtime.sendMessage({ action: 'checkPage', videoTitle, pageNum });
-    });
+const saveJobs = (searchJobs) => chrome.storage.session.set({ searchJobs });
+
+// Predicted page first, then alternate forward/backward. Videos can move either
+// way (new uploads push them to higher pages, removals pull them lower).
+function candidatePages(predicted) {
+    const pages = [];
+    for (let d = 0; pages.length < MAX_PROBES; d++) {
+        for (const p of d === 0 ? [predicted] : [predicted + d, predicted - d]) {
+            if (p >= 1 && !pages.includes(p) && pages.length < MAX_PROBES) pages.push(p);
+        }
+    }
+    return pages;
 }
 
 async function getVideoTitleFromHistory(query) {
-    return new Promise((resolve) => {
-        chrome.history.search({ text: query, maxResults: 10, startTime: 480 }, (results) => {
-            if (results.length > 0) {
-                const firstResultTitle = results[0].title || '';
-                const videoTitle = firstResultTitle.split(' ').slice(0, 2).join(' ');
-                resolve(videoTitle);
-            } else {
-                resolve(null);
-            }
-        });
-    });
+    const results = await chrome.history.search({ text: query, maxResults: 10, startTime: 0 });
+    const m = results.map((r) => (r.title || '').match(/FC2[-\s]?PPV[-\s]?(\d+)/i)).find(Boolean);
+    return m ? `FC2PPV ${m[1]}` : null;
 }
 
-function openTabAndPrepareHighlight(url, videoTitle) {
-    chrome.tabs.create({ url: url }, (tab) => {
-        highlightTasks[tab.id] = videoTitle;
-    });
-}
-
-// --- Main Logic ---
+// --- Icon click: start a search in a new tab ---
 
 chrome.action.onClicked.addListener(async () => {
-    // Primary: use synced data (works across devices)
-    const storedData = await chrome.storage.sync.get(['oldVideoCount', 'videoTitle', 'lastKnownPage']);
-    let videoTitle = storedData.videoTitle;
-    let lastKnownPage = storedData.lastKnownPage;
+    const stored = await chrome.storage.sync.get(['oldVideoCount', 'videoTitle', 'lastKnownPage']);
+    let videoTitle = stored.videoTitle;
+    let lastKnownPage = stored.lastKnownPage;
 
-    // Fallback: bootstrap from local history on first run
-    if (!videoTitle) {
-        videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
-    }
+    // First run: bootstrap from local history
+    if (!videoTitle) videoTitle = await getVideoTitleFromHistory('supjav.com fc2');
     if (!lastKnownPage) {
-        const historyResults = await new Promise(resolve => chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 480 }, resolve));
-        const lastVisited = historyResults.find((entry) => entry.url.includes('/page/'));
-        lastKnownPage = lastVisited ? parseInt(lastVisited.url.match(/page\/(\d+)/)[1], 10) : 1;
+        const history = await chrome.history.search({ text: 'supjav.com', maxResults: 50, startTime: 0 });
+        const hit = history.find((e) => LIST_PAGE_RE.test(e.url));
+        lastKnownPage = hit ? parseInt(hit.url.match(LIST_PAGE_RE)[1], 10) : 1;
     }
 
-    if (!videoTitle) return;
+    if (!videoTitle) return setBadge('?', 'No watched video saved yet');
+    setBadge('…', `Searching for ${videoTitle}`);
 
-    const initialCheck = await findVideoViaOffscreen(videoTitle, lastKnownPage);
-
-    if (initialCheck.found) {
-        const url = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
-        openTabAndPrepareHighlight(url, videoTitle);
-        if (initialCheck.totalVideos) {
-            chrome.storage.sync.set({ oldVideoCount: initialCheck.totalVideos, videoTitle, lastKnownPage });
-        }
-        await chrome.offscreen.closeDocument();
-        return;
-    }
-
-    const newVideoCount = initialCheck.totalVideos;
-    if (!newVideoCount) {
-        const url = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
-        openTabAndPrepareHighlight(url, videoTitle);
-        await chrome.offscreen.closeDocument();
-        return;
-    }
-
-    const oldVideoCount = storedData.oldVideoCount || newVideoCount;
-
-    const videosAdded = newVideoCount - oldVideoCount;
-    const pagesShifted = Math.floor(videosAdded / VIDEOS_PER_PAGE);
-    const predictedPage = lastKnownPage + pagesShifted;
-
-    console.log(`Videos added: ${videosAdded}. Pages shifted: ${pagesShifted}. Predicted page: ${predictedPage}`);
-
-    const predictedCheck = await findVideoViaOffscreen(videoTitle, predictedPage);
-    if (predictedCheck.found) {
-        const finalUrl = `https://supjav.com/category/uncensored-jav/page/${predictedPage}`;
-        openTabAndPrepareHighlight(finalUrl, videoTitle);
-        chrome.storage.sync.set({ oldVideoCount: newVideoCount, videoTitle, lastKnownPage: predictedPage });
-    } else {
-        console.log("Not on predicted page, checking next page.");
-        const nextPage = predictedPage + 1;
-        const nextCheck = await findVideoViaOffscreen(videoTitle, nextPage);
-        if (nextCheck.found) {
-            const finalUrl = `https://supjav.com/category/uncensored-jav/page/${nextPage}`;
-            openTabAndPrepareHighlight(finalUrl, videoTitle);
-            chrome.storage.sync.set({ oldVideoCount: newVideoCount, videoTitle, lastKnownPage: nextPage });
-        } else {
-            const fallbackUrl = `https://supjav.com/category/uncensored-jav/page/${lastKnownPage}`;
-            openTabAndPrepareHighlight(fallbackUrl, videoTitle);
-        }
-    }
-
-    await chrome.offscreen.closeDocument();
+    // Register the job before the page loads, so the content script always finds it.
+    const tab = await chrome.tabs.create({});
+    const jobs = await getJobs();
+    jobs[tab.id] = {
+        title: videoTitle,
+        lastKnownPage,
+        oldVideoCount: stored.oldVideoCount || null,
+        queue: null,
+        visited: [],
+        expires: Date.now() + JOB_TTL_MS,
+    };
+    await saveJobs(jobs);
+    chrome.tabs.update(tab.id, { url: LIST_URL + lastKnownPage });
 });
 
-// --- Message Listener for Highlight Job ---
+// --- Messages from the content script ---
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === 'getHighlightJob') {
-        const tabId = sender.tab && sender.tab.id;
-        const title = (tabId && highlightTasks[tabId]) || null;
-        if (title) delete highlightTasks[tabId];
-        sendResponse({ title }); // always respond, even when null, so the channel closes cleanly
-        return false;
+    const tabId = sender.tab && sender.tab.id;
+    if (!tabId) return;
+
+    if (request.action === 'getSearchJob') {
+        getJobs().then((jobs) => sendResponse({ title: jobs[tabId]?.title || null }));
+        return true;
+    }
+
+    if (request.action === 'searchStep') {
+        handleSearchStep(tabId, request).then(sendResponse);
+        return true;
     }
 });
 
-// --- Auto-track last-watched state as the user browses ---
-// Keeps chrome.storage.sync fresh without waiting for an icon click,
-// so device B sees the latest snapshot from device A.
-function trackSupjavTab(tabId, reason) {
-    chrome.tabs.get(tabId, (tab) => {
-        if (chrome.runtime.lastError) return;
-        if (!tab || !tab.url || !tab.url.includes('supjav.com')) return;
-        console.log(`[Tracker:${reason}] url=${tab.url} title=${tab.title}`);
+async function handleSearchStep(tabId, { page, total, found }) {
+    const jobs = await getJobs();
+    const job = jobs[tabId];
+    if (!job) return {};
 
-        const pageMatch = tab.url.match(/\/page\/(\d+)/);
-        if (pageMatch) {
-            const page = parseInt(pageMatch[1], 10);
-            chrome.storage.sync.set({ lastKnownPage: page }, () => {
-                if (chrome.runtime.lastError) {
-                    console.error('[Tracker] set lastKnownPage failed:', chrome.runtime.lastError);
-                } else {
-                    console.log('[Tracker] lastKnownPage =', page);
-                }
-            });
-        }
+    if (found) {
+        delete jobs[tabId];
+        await saveJobs(jobs);
+        await chrome.storage.sync.set({
+            videoTitle: job.title,
+            lastKnownPage: page,
+            oldVideoCount: total || job.oldVideoCount,
+        });
+        setBadge('', '');
+        return { done: true };
+    }
 
-        if (tab.title) {
-            const m = tab.title.match(/FC2[-\s]?PPV[-\s]?(\d+)/i);
-            if (m) {
-                const videoTitle = `FC2PPV ${m[1]}`;
-                chrome.storage.sync.set({ videoTitle }, () => {
-                    if (chrome.runtime.lastError) {
-                        console.error('[Tracker] set videoTitle failed:', chrome.runtime.lastError);
-                    } else {
-                        console.log('[Tracker] videoTitle =', videoTitle);
-                    }
-                });
-            }
+    if (!job.visited.includes(page)) job.visited.push(page);
+
+    // On the first page we see, use its live total to predict the shift.
+    if (!job.queue) {
+        let predicted = job.lastKnownPage;
+        if (total && job.oldVideoCount) {
+            const added = total - job.oldVideoCount;
+            predicted = Math.max(1, job.lastKnownPage + Math.floor(added / VIDEOS_PER_PAGE));
+            console.log(`Videos added since snapshot: ${added}. Predicted page: ${predicted}`);
         }
-    });
+        job.predicted = predicted;
+        job.queue = candidatePages(predicted);
+    }
+
+    const next = job.queue.find((p) => !job.visited.includes(p));
+    if (next) {
+        job.expires = Date.now() + JOB_TTL_MS;
+        await saveJobs(jobs);
+        setBadge('…', `Searching for ${job.title}: trying page ${next}`);
+        return { nextPage: next };
+    }
+
+    delete jobs[tabId];
+    await saveJobs(jobs);
+    setBadge('?', `${job.title} not found within 6 pages of ${job.predicted}`);
+    return { notFound: true, predicted: job.predicted };
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    // Fire on any meaningful change — URL navigation, title set, or load complete.
-    // Title often arrives AFTER status=complete, so we can't rely on a single event.
-    if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') {
-        trackSupjavTab(tabId, changeInfo.url ? 'url' : changeInfo.title ? 'title' : 'complete');
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+    const jobs = await getJobs();
+    if (jobs[tabId]) {
+        delete jobs[tabId];
+        await saveJobs(jobs);
+        setBadge('', '');
     }
 });
 
-chrome.tabs.onActivated.addListener(({ tabId }) => trackSupjavTab(tabId, 'activated'));
+// The last-watched video and its list page are recorded by videoFinder.js
+// on video pages (only after you've actually watched for a few seconds).

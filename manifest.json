@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Last Played Video Finder",
-  "version": "1.5",
-  "permissions": ["history", "scripting", "tabs", "storage", "offscreen" ],
+  "version": "1.7",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArmXlMJQycu+yJ3WjfcMDwPz/JKI64VVTREaooXz1808gjY6c4+v7FhdQDqpcUEGmUaRt6/XbxSbqHN8rjuy1dv7qHXmydoMSF6lT/PslNEZGP6Kb6xKGeiQH8yZmDf2In5o2ccec3wV04JTiFYvXK+TQwulFkjhaGLt0r+6PEhrSyk8NQbrS+lDt/CCdifU5ol4ii4BPUFdT5FuBEpc4Vmk4tjhxInSbb/ZuZpAjHILTjOTu2cB6khD+Yt9bl4IIE757KrrW2uo2USLWX1GxmMjCBdWkfXdFngznoAr8pAzEZfeYT6kNvXe1eBGLKkGK9PZDdmRYf/GUVlmXlnI9SQIDAQAB",
+  "permissions": ["history", "scripting", "tabs", "storage" ],
   "host_permissions": ["https://supjav.com/*"],
   "background": {
     "service_worker": "background.js",
